@@ -1,0 +1,16 @@
+{
+  "vit_base_shared_fc": {
+    "model": "ViTWithSharedHead",
+    "epochs": 5,
+    "best_val_acc": 0.5869,
+    "last_val_acc": 0.5869,
+    "last_train_loss": 1.1056313209533692
+  },
+  "d2nn_12_shared_fc": {
+    "model": "D2NN12WithSharedHead",
+    "epochs": 22,
+    "best_val_acc": 0.5842,
+    "last_val_acc": 0.5793,
+    "last_train_loss": 0.9772335265159607
+  }
+}
