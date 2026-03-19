@@ -1,0 +1,111 @@
+Version8 设计说明
+==================
+
+文件说明
+----------
+1. notebook 文件：task3_kd_version8_unrunned.ipynb
+2. 说明文件：task3_kd_version8_design_notes.txt
+3. 当前灰度 CIFAR-10 D2NN baseline 参考值：57%
+
+这版的核心定位
+----------------
+Version8 不再延续 Version7 的 token 主导蒸馏思路，而是回到更贴近光电物理结构的强 KD 路线：
+1. 学生结构明确写成：相位板 -> 传播 -> CMOS -> 电上简单处理 -> 重构 -> 下一层
+2. 蒸馏监督点定义在每层 CMOS 输出的 14x14 map 上
+3. 教师不再直接输出 signed hidden feature 给学生硬对齐
+4. 教师先做 teacher-side 压缩，把 patch token 压成非负 target map
+5. 第一阶段先学固定 target，第二阶段再学链式 target
+
+为什么要 teacher-side 压缩
+---------------------------
+学生侧经过 CMOS 以后，天然拿到的是正值量：
+1. I = |E|^2
+2. sqrt(I + eps) = |E|
+这些量是非负的，更像能量或幅值，不适合直接与 ViT 的 signed feature 做逐元素对齐。
+
+所以 Version8 的解决方案是：
+T_l(p) = sqrt(mean_c(H_l(p, c)^2) + eps)
+也就是先把老师压到非负空间，再让学生去学空间响应图。
+
+学生主结构
+-----------
+Version8 的学生主干是严格交替式：
+1. 输入灰度图先做 amplitude = sqrt(x + eps)
+2. 相位板调制
+3. 传播
+4. CMOS 采样得到 intensity = |E|^2
+5. 电上默认只保留 sqrt，得到 driver_map
+6. 用 driver_map 重构 field，送入下一层
+
+蒸馏时到底在改谁
+----------------
+Version8 里，蒸馏 loss 是定义在每层 CMOS 输出的 pooled map 上，但真正主要被优化的是相位板参数。
+如果 CMOS 只做固定 sqrt，它本身没有学习参数，所以这条线本质上是在“借助 CMOS 读出的监督信号来改相位板”。
+
+第一阶段：固定 target 初级蒸馏
+------------------------------
+对应 notebook 的 Stage A。
+默认做法：
+1. 教师冻结
+2. 全 12 层都使用 fixed map target
+3. 后 4 层额外加权
+4. logit KD 开启
+5. CE 保持较小权重
+
+默认总损失：
+L = fixed_map_weight * L_fixed
+    + logit_kd_weight * L_logit
+    + ce_weight * L_ce
+
+第二阶段：后层链式蒸馏
+----------------------
+对应 notebook 的 Stage B。
+具体做法：
+1. 拿第 l-1 层学生 pooled map 作为 gate
+2. 用 gate 去调制第 l 层教师 patch token
+3. 再把调制后的 token 压成新的非负 map
+4. 这个 map 就是 chain target
+注意：chain target 不替代 fixed target，而是与 fixed target 一起存在。
+
+第三阶段：低学习率稳定微调
+--------------------------
+对应 notebook 的 Stage C，默认关闭。
+只有在 Stage B 已经比较稳的时候再开。
+
+当前默认保留与默认不保留
+------------------------
+默认保留：
+1. sqrt(intensity) 输入
+2. 每层 CMOS 读出
+3. 电上默认只做 sqrt
+4. teacher-side patch_rms 压缩
+5. 轻量 CNN 读出头
+
+默认不保留：
+1. 学生侧 normalize
+2. 学生侧 adapter
+3. 大 projection head
+4. 直接硬对齐 768 维 signed token
+
+最常改的参数位置
+----------------
+1. Stage A 配置：
+   STAGE_A_FIXED_MAP_WEIGHT / STAGE_A_LOGIT_KD_WEIGHT / STAGE_A_CE_WEIGHT
+2. Stage B 配置：
+   STAGE_B_TRAINABLE_FROM_LAYER / STAGE_B_CHAIN_LAYERS / STAGE_B_CHAIN_WEIGHT
+3. Stage C 配置：
+   是否开启，以及学习率是否还要再低
+
+第一轮推荐实验顺序
+------------------
+1. 只跑 Stage A
+2. 再接 Stage B
+3. 最后再看要不要开 Stage C
+
+和 57% baseline 对照时，建议至少记录：
+1. baseline best
+2. Stage A best
+3. Stage B best
+4. Stage C best（如果开启）
+
+这版最重要的优点不是花哨，而是结构清楚、可调参数位置固定、能和 Ver7 形成干净对照。
